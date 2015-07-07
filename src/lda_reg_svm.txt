@@ -1,0 +1,98 @@
+from sklearn.pipeline import Pipeline, FeatureUnion
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.svm import SVR
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.decomposition import TruncatedSVD
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import chi2, f_regression, SelectPercentile
+from sklearn.base import BaseEstimator, TransformerMixin
+from gensim.matutils import Sparse2Corpus, corpus2dense
+from gensim.models.ldamodel import LdaModel
+from pandas import DataFrame
+
+class Sparse2Gensim(BaseEstimator, TransformerMixin):
+	def fit(self, x, y=None):
+		return self
+	def transform(self, X):
+		return Sparse2Corpus(X.T)
+
+class VarSelect(BaseEstimator, TransformerMixin):
+	def __init__(self, keys):
+		self.keys = keys
+	def fit(self, x, y=None):
+		return self
+	def transform(self, df):
+		return df[self.keys].values
+
+class LdaTransformer(BaseEstimator, TransformerMixin):
+	def __init__(self,model):
+		self.model = model
+	def fit(self, X,y=None):
+		return self
+	def transform(self, X):
+		self.model.update(X)
+		return corpus2dense(self.model[X],self.model.num_topics).T
+
+class ModelClassTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, model):
+        self.model = model
+    def fit(self, *args, **kwargs):
+        self.model.fit(*args, **kwargs)
+        return self
+    def transform(self, X, **transform_params):
+        return DataFrame(self.model.predict_proba(X))
+
+class ModelRegTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, model):
+        self.model = model
+    def fit(self, *args, **kwargs):
+        self.model.fit(*args, **kwargs)
+        return self
+    def transform(self, X, **transform_params):
+        return DataFrame(self.model.predict(X))
+
+tfidf = TfidfVectorizer(strip_accents='unicode', analyzer='word', token_pattern=r'\w{1,}', use_idf=True, smooth_idf=True, sublinear_tf=True)
+testcorpus = Sparse2Corpus(tfidf.fit_transform(test.title).T)
+
+pipeline = Pipeline([
+	('union', FeatureUnion([
+		('lda', Pipeline([
+			('textSelector', VarSelect(keys='text')),
+			('tfidf', TfidfVectorizer(strip_accents='unicode', analyzer='word', token_pattern=r'\w{1,}', use_idf=True, smooth_idf=True, sublinear_tf=True)),
+			('textFeat', SelectPercentile(chi2)),
+			('sparse2gensim',Sparse2Gensim()),
+			('lda', LdaTransformer(LdaModel(testcorpus,num_topics=200)))
+		])),
+		('textReg', Pipeline([
+			('textSelector', VarSelect(keys='text')),
+			('tfidf', TfidfVectorizer(strip_accents='unicode', analyzer='word', token_pattern=r'\w{1,}', use_idf=True, smooth_idf=True, sublinear_tf=True)),
+			('textFeat', SelectPercentile(chi2)),
+			('glm', ModelRegTransformer(Ridge())),
+		])),
+		('pca', Pipeline([
+			('textSelector', VarSelect(keys='text')),
+			('tfidf', TfidfVectorizer(strip_accents='unicode', analyzer='word', token_pattern=r'\w{1,}', use_idf=True, smooth_idf=True, sublinear_tf=True)),
+			('textFeat', SelectPercentile(chi2)),
+			('pca', TruncatedSVD(algorithm='randomized', n_iter=5, random_state=args.SEED, tol=0.0))
+		])),
+		('meta', Pipeline([
+			('metaSelector', VarSelect(keys=['query_percent_title','query_word_score','word2vec','doc2vec','desc_len']))
+		]))
+	])),
+	('scl', StandardScaler(copy=True, with_mean=True, with_std=True)),
+	('finalFeat',SelectPercentile(f_regression)),
+	('svm', SVR(kernel='rbf'))
+])
+
+grid = {
+	'union__lda__tfidf__min_df':[3],'union__lda__tfidf__max_df': [0.50],'union__lda__tfidf__ngram_range':[(1,3)],
+	'union__lda__textFeat__percentile':[91,90],
+	'union__pca__tfidf__min_df':[4],'union__pca__tfidf__max_df': [0.30],'union__pca__tfidf__ngram_range':[(1,3)],
+	'union__pca__textFeat__percentile':[97],
+	'union__pca__pca__n_components' : [250,300],
+	'union__textReg__tfidf__min_df':[3],'union__textReg__tfidf__max_df': [0.30],'union__textReg__tfidf__ngram_range':[(1,5)],
+	'union__textReg__textFeat__percentile':[95],
+	'union__textReg__glm__model__alpha':[1],
+	'finalFeat__percentile':[97,96],
+	'svm__C': [3,4],'svm__degree':[1]
+}
